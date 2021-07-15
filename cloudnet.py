@@ -129,8 +129,7 @@ class CloudNet(pl.LightningModule):
 
         # self.accuracy = torchmetrics.Accuracy()
         self.train_acc = torchmetrics.Accuracy()
-        self.valid_acc = torchmetrics.Accuracy(
-            average=None, num_classes=self.count_labels)
+        self.valid_acc = torchmetrics.Accuracy()
 
     def forward(self, x):
         embedding = self.backbone(x)
@@ -159,11 +158,8 @@ class CloudNet(pl.LightningModule):
         self.log('valid_loss', loss)
 
         # y_hat = y_hat.argmax(1)
-        # self.valid_acc(y_hat, y)
-        # self.log('valid_acc', self.valid_acc, on_step=False, on_epoch=True)
-
         self.valid_acc(y_hat, y)
-        self.log_dict({f"valid_acc_l_idx{idx}": x for idx, x in enumerate(self.valid_acc)}, on_epoch=True)
+        self.log('valid_acc', self.valid_acc, on_step=False, on_epoch=True)
 
         # acc = accuracy(y_hat, y)
         # f1_val = f1(y_hat, y, num_classes=self.count_labels)
@@ -208,7 +204,7 @@ def cli_main():
 
     # training
     checkpoint_end = pl.callbacks.ModelCheckpoint()
-    trainer = pl.Trainer.from_argparse_args(args, callbacks=[checkpoint_end])
+    trainer = pl.Trainer.from_argparse_args(args, callbacks=[checkpoint_end], num_sanity_val_steps=0)
     trainer.fit(model, d_module)
 
     # print(checkpoint_end.best_model_path)
