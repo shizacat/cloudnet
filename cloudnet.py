@@ -27,6 +27,7 @@ def create_confusion_matrics_img(conf_mat):
     sns.heatmap(conf_mat, annot=True, ax=ax, cmap=plt.cm.Blues, fmt="d")
 
     plt.savefig(buf, format="jpeg")
+    plt.close()
     buf.seek(0)
     img = Image.open(buf)
     img = transforms.ToTensor()(img)
