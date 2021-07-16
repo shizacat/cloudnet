@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import io
 import os
 import argparse
 from pathlib import Path
@@ -10,12 +11,26 @@ import torchmetrics
 import torch.nn as nn
 import pytorch_lightning as pl
 import torchvision.models as models
-from torchmetrics.functional import accuracy, f1
 from PIL import Image
 from torch.nn import functional as F
 from torch.utils.data import Dataset, DataLoader, random_split
-from pytorch_lightning.metrics import functional as FM
 from torchvision import transforms
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+def create_confusion_matrics_img(conf_mat):
+    buf = io.BytesIO()
+
+    fig, ax = plt.subplots()
+    sns.heatmap(conf_mat, annot=True, ax=ax, cmap=plt.cm.Blues, fmt="d")
+
+    plt.savefig(buf, format="jpeg")
+    buf.seek(0)
+    img = Image.open(buf)
+    img = transforms.ToTensor()(img)
+    return img
 
 
 class CCSNDataSet(Dataset):
@@ -61,18 +76,30 @@ class CCSNDataSet(Dataset):
 class CCSNDataModule(pl.LightningDataModule):
     """DataSet for Cirrus Cumulus Stratus Nimbus"""
 
-    url_default = "https://dvn-cloud.s3.amazonaws.com/10.7910/DVN/CADDPD/16d2333a331-120127d824d5?response-content-disposition=attachment%3B%20filename%2A%3DUTF-8%27%27CCSN.zip&response-content-type=application%2Fzip&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20210713T052017Z&X-Amz-SignedHeaders=host&X-Amz-Expires=3600&X-Amz-Credential=AKIAIEJ3NV7UYCSRJC7A%2F20210713%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=95e4dda573bf1f039f978b320d46a6dc7dd6191362402360cc719629bd8711eb"
+    url_default = "https://dvn-cloud.s3.amazonaws.com/..."
 
-    def __init__(self, data_dir: str = './dataset', batch_size: int = 32):
+    def __init__(
+        self,
+        data_dir: str = "./dataset",
+        batch_size: int = 32,
+        valid_percent: float = 0.1,
+    ):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
+        self.valid_percent = valid_percent
         self.num_workers = 8
-        self.transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            # transforms.RandomVerticalFlip(p=0.5),
-            transforms.ToTensor(),
-        ])
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize((256, 256)),
+                # transforms.RandomVerticalFlip(p=0.5),
+                transforms.ToTensor(),
+            ]
+        )
+
+        # check
+        if 1 <= self.valid_percent < 0:
+            raise ValueError("valid_percent out from range [0-1)")
 
         # color, w, h
         self.dims = (3, 256, 256)
@@ -89,9 +116,9 @@ class CCSNDataModule(pl.LightningDataModule):
 
     def setup(self, stage: Optional[str] = None):
         # Assign train/val datasets for use in dataloaders
-        if stage == 'fit' or stage is None:
+        if stage == "fit" or stage is None:
             ds = CCSNDataSet(self.data_dir, transform=self.transform)
-            tlen = int(len(ds) * 0.9)
+            tlen = int(len(ds) * (1 - self.valid_percent))
             vlen = len(ds) - tlen
             self.ds_train, self.ds_val = random_split(ds, [tlen, vlen])
 
@@ -99,13 +126,17 @@ class CCSNDataModule(pl.LightningDataModule):
         return DataLoader(
             self.ds_train,
             batch_size=self.batch_size,
-            num_workers=self.num_workers)
+            num_workers=self.num_workers,
+        )
 
     def val_dataloader(self):
+        if self.valid_percent == 0:
+            return
         return DataLoader(
             self.ds_val,
             batch_size=self.batch_size,
-            num_workers=self.num_workers)
+            num_workers=self.num_workers,
+        )
 
 
 class Backbone(torch.nn.Module):
@@ -127,9 +158,15 @@ class CloudNet(pl.LightningModule):
         self.backbone = backbone
         self.count_labels = count_labels
 
-        # self.accuracy = torchmetrics.Accuracy()
         self.train_acc = torchmetrics.Accuracy()
         self.valid_acc = torchmetrics.Accuracy()
+
+        self.valid_cm = torchmetrics.ConfusionMatrix(
+            num_classes=self.count_labels, multilabel=False
+        )
+        self.train_cm = torchmetrics.ConfusionMatrix(
+            num_classes=self.count_labels, multilabel=False
+        )
 
     def forward(self, x):
         embedding = self.backbone(x)
@@ -138,51 +175,89 @@ class CloudNet(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.backbone(x)
-
         loss = F.cross_entropy(y_hat, y)
-        self.log('train_loss', loss)
 
-        # self.log('train_acc_step', self.accuracy(y_hat, y))
-        self.train_acc(y_hat, y)
-        self.log('train_acc', self.train_acc, on_step=False, on_epoch=True)
+        # y_hat = y_hat.argmax(1)
+        self.train_acc.update(y_hat, y)
+        self.train_cm.update(y_hat, y)
 
+        self.log("train_loss", loss)
         return loss
 
-    # def training_epoch_end(self, outs):
-    #     self.log('train_acc_epoch', self.accuracy.compute())
+    def training_epoch_end(self, outs):
+        self.log("train_acc", self.train_acc, on_step=False, on_epoch=True)
+
+        tb = self.logger.experiment
+        a = self.train_cm.compute().detach().cpu().type(torch.int)
+        tb.add_image(
+            "train_confusion_matrix",
+            create_confusion_matrics_img(a),
+            global_step=self.current_epoch,
+        )
+        self.train_cm.reset()
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.backbone(x)
         loss = F.cross_entropy(y_hat, y)
-        self.log('valid_loss', loss)
 
         # y_hat = y_hat.argmax(1)
-        self.valid_acc(y_hat, y)
-        self.log('valid_acc', self.valid_acc, on_step=False, on_epoch=True)
+        self.valid_acc.update(y_hat, y)
+        self.valid_cm.update(y_hat, y)
 
-        # acc = accuracy(y_hat, y)
-        # f1_val = f1(y_hat, y, num_classes=self.count_labels)
-        # self.log('valid_acc', acc)
-        # self.log('valid_f1', f1_val)
+        self.log("valid_loss", loss)
+
+    def validation_epoch_end(self, outputs):
+        self.log("valid_acc", self.valid_acc, on_step=False, on_epoch=True)
+
+        tb = self.logger.experiment
+        a = self.valid_cm.compute().detach().cpu().type(torch.int)
+        tb.add_image(
+            "valid_confusion_matrix",
+            create_confusion_matrics_img(a),
+            global_step=self.current_epoch,
+        )
+        self.valid_cm.reset()
 
     def test_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.backbone(x)
         loss = F.cross_entropy(y_hat, y)
-        self.log('test_loss', loss)
+        self.log("test_loss", loss)
 
     def configure_optimizers(self):
         # self.hparams available because we called self.save_hyperparameters()
         return torch.optim.Adam(
-            self.parameters(), lr=self.hparams.learning_rate)
+            self.parameters(), lr=self.hparams.learning_rate
+        )
 
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(
-            parents=[parent_parser], add_help=False)
-        parser.add_argument('--learning_rate', type=float, default=0.0001)
+            parents=[parent_parser], add_help=False
+        )
+        parser.add_argument("--learning_rate", type=float, default=0.0001)
         return parser
+
+    def infer(self, img) -> int:
+        """Infering for img
+
+        Args
+            img - PIL image
+
+        Return
+            label index
+        """
+        transform = transforms.Compose(
+            [
+                transforms.Resize((256, 256)),
+                transforms.ToTensor(),
+            ]
+        )
+        img = transform(img).unsqueeze(0)
+        y = self.forward(img)
+        y = y.argmax(1)
+        return int(y[0])
 
 
 def cli_main():
@@ -190,13 +265,16 @@ def cli_main():
 
     # args
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch-size', default=32, type=int)
+    parser.add_argument("--batch-size", default=32, type=int)
+    parser.add_argument("--valid-percent", default=0.1, type=float)
     parser = pl.Trainer.add_argparse_args(parser)
     parser = CloudNet.add_model_specific_args(parser)
     args = parser.parse_args()
 
     # data
-    d_module = CCSNDataModule("./dataset", args.batch_size)
+    d_module = CCSNDataModule(
+        "./dataset", args.batch_size, valid_percent=args.valid_percent
+    )
 
     # model
     count_labels = len(CCSNDataSet.labels)
@@ -204,10 +282,10 @@ def cli_main():
 
     # training
     checkpoint_end = pl.callbacks.ModelCheckpoint()
-    trainer = pl.Trainer.from_argparse_args(args, callbacks=[checkpoint_end], num_sanity_val_steps=0)
+    trainer = pl.Trainer.from_argparse_args(
+        args, callbacks=[checkpoint_end], num_sanity_val_steps=0
+    )
     trainer.fit(model, d_module)
-
-    # print(checkpoint_end.best_model_path)
 
     # to onnx
     print("Convert to onnx")
@@ -215,11 +293,11 @@ def cli_main():
     model.to_onnx(
         os.path.join(checkpoint_end.dirpath, "model_last.onnx"),
         input_sampe,
-        export_params=True
+        export_params=True,
     )
 
     # testing
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     cli_main()
