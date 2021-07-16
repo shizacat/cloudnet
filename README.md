@@ -22,6 +22,20 @@ As
 ...
 ```
 
+## Train
+
+```bash
+./cloudnet.py --gpus 1 --max_epochs 20 --learning_rate 0.00001
+```
+
+## Inference
+
+```bash
+# example
+./infer.py --model-path lightning_logs/version_0/checkpoints/model_last.onnx \
+  --img dataset/As/As-N009.jpg
+```
+
 ## Logs
 
 Show logs:
