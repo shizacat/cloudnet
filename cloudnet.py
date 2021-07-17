@@ -92,8 +92,9 @@ class CCSNDataModule(pl.LightningDataModule):
         self.num_workers = 8
         self.transform = transforms.Compose(
             [
-                transforms.Resize((256, 256)),
                 # transforms.RandomVerticalFlip(p=0.5),
+                # transforms.RandomRotation((-10, 10)),
+                transforms.Resize((256, 256)),
                 transforms.ToTensor(),
             ]
         )
