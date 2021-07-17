@@ -10,8 +10,7 @@ The base paper: https://www.researchgate.net/publication/326873190_CloudNet_Grou
 
 You need to use the dataset CCSN (Cirrus Cumulus Stratus Nimbus).
 It may be downloaded from: 
-[https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/CADDPD]
-(https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/CADDPD).
+https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/CADDPD.
 Extract it to root of folder 'dataset'.
 Example:
 
@@ -49,3 +48,17 @@ Run notebook
 ```bash
 jupyter notebook --allow-root --ip 0.0.0.0
 ```
+
+# Model
+
+- [Pretrained model](https://disk.yandex.ru/d/P0G4jV4S5AFgkA)
+- [Full train log](https://disk.yandex.ru/d/GGF0UJaOyvJUKw)
+
+Train info:
+
+- Learning rate: 1e-05
+- Model: Resnet18 (pretrain)
+- Epoch: 20
+- Validation percent: 10%
+- Acc train: 0.99
+- Add valid: 0.53
